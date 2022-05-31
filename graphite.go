@@ -78,6 +78,14 @@ type Options struct {
 	// namespace is Options.Namespace, rowTags are the metric tags and
 	// defaultTags are tags from Options.Tags
 	MetricPathBuilder func(nameSpace, viewName string, rowTags, defaultTags []tag.Tag) string
+
+	// Do not apply sanitization to periods in sanitizeRune
+	//
+	// According to Graphite documentation on naming hierarchy. Periods
+	// should be allowed in a metric name for creating path components.
+	//
+	// https://graphite.readthedocs.io/en/latest/feeding-carbon.html#step-1-plan-a-naming-hierarchy
+	AllowDotsDashesInNames bool
 }
 
 const (
@@ -185,7 +193,7 @@ func (e *Exporter) toMetric(v *view.View, row *view.Row, vd *view.Data) []Metric
 			cumCount += uint64(data.CountPerBucket[i])
 			rowTags := append(row.Tags, tag.Tag{Key: tag.MustNewKey("bucket"), Value: fmt.Sprintf("le=%.2f", b)})
 			metric := Metric{
-				Name:      e.pathBuilder(sanitize(e.opts.Namespace), sanitize(vd.View.Name), rowTags, e.tags),
+				Name:      e.pathBuilder(sanitize(e.opts.Namespace, e.opts.AllowDotsDashesInNames), sanitize(vd.View.Name, e.opts.AllowDotsDashesInNames), rowTags, e.tags),
 				Value:     float64(cumCount),
 				Timestamp: vd.End,
 			}
@@ -193,7 +201,7 @@ func (e *Exporter) toMetric(v *view.View, row *view.Row, vd *view.Data) []Metric
 		}
 		rowTags := append(row.Tags, tag.Tag{Key: tag.MustNewKey("bucket"), Value: "le=+Inf"})
 		metric := Metric{
-			Name:      e.pathBuilder(sanitize(e.opts.Namespace), sanitize(vd.View.Name), rowTags, e.tags),
+			Name:      e.pathBuilder(sanitize(e.opts.Namespace, e.opts.AllowDotsDashesInNames), sanitize(vd.View.Name, e.opts.AllowDotsDashesInNames), rowTags, e.tags),
 			Value:     float64(cumCount),
 			Timestamp: vd.End,
 		}
@@ -216,7 +224,7 @@ func (e *Exporter) formatTimeSeriesMetric(value interface{}, row *view.Row, vd *
 		val = x
 	}
 	return Metric{
-		Name:      e.pathBuilder(sanitize(e.opts.Namespace), sanitize(vd.View.Name), row.Tags, e.tags),
+		Name:      e.pathBuilder(sanitize(e.opts.Namespace, e.opts.AllowDotsDashesInNames), sanitize(vd.View.Name, e.opts.AllowDotsDashesInNames), row.Tags, e.tags),
 		Value:     val,
 		Timestamp: vd.End,
 	}
@@ -279,14 +287,19 @@ const labelKeySizeLimit = 128
 
 // Sanitize returns a string that is truncated to 128 characters if it's too
 // long, and replaces non-alphanumeric characters to underscores.
-func sanitize(s string) string {
+func sanitize(s string, allowDotsDashesInNames bool) string {
 	if len(s) == 0 {
 		return s
 	}
 	if len(s) > labelKeySizeLimit {
 		s = s[:labelKeySizeLimit]
 	}
-	s = strings.Map(sanitizeRune, s)
+	s = strings.Map(
+		func(r rune) rune {
+			return sanitizeRune(r, allowDotsDashesInNames)
+		},
+		s,
+	)
 	if unicode.IsDigit(rune(s[0])) {
 		s = "key_" + s
 	}
@@ -297,8 +310,9 @@ func sanitize(s string) string {
 }
 
 // sanitizeRune converts anything that is not a letter or digit to an underscore
-func sanitizeRune(r rune) rune {
-	if unicode.IsLetter(r) || unicode.IsDigit(r) {
+func sanitizeRune(r rune, allowDotsDashesInNames bool) rune {
+	// https://graphite.readthedocs.io/en/latest/feeding-carbon.html#step-1-plan-a-naming-hierarchy
+	if unicode.IsLetter(r) || unicode.IsDigit(r) || allowDotsDashesInNames && (r == '.' || r == '-') {
 		return r
 	}
 	// Everything else turns into an underscore
